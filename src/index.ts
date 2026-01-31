@@ -27,6 +27,7 @@ import {
   handlePortError,
   PortInUseError,
 } from "./infra/ports.js";
+import { applyGlobalProxyFromEnv } from "./infra/proxy.js";
 import { assertSupportedRuntime } from "./infra/runtime-guard.js";
 import { formatUncaughtError } from "./infra/errors.js";
 import { installUnhandledRejectionHandler } from "./infra/unhandled-rejections.js";
@@ -36,6 +37,7 @@ import { assertWebChannel, normalizeE164, toWhatsappJid } from "./utils.js";
 
 loadDotEnv({ quiet: true });
 normalizeEnv();
+applyGlobalProxyFromEnv();
 ensureOpenClawCliOnPath();
 
 // Capture all console output into structured logs while keeping stdout/stderr behavior.
