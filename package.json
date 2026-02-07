@@ -239,7 +239,18 @@
     "overrides": {
       "@sinclair/typebox": "0.34.47",
       "tar": "7.5.7"
-    }
+    },
+    "onlyBuiltDependencies": [
+      "@lydell/node-pty",
+      "@matrix-org/matrix-sdk-crypto-nodejs",
+      "@napi-rs/canvas",
+      "@whiskeysockets/baileys",
+      "authenticate-pam",
+      "esbuild",
+      "node-llama-cpp",
+      "protobufjs",
+      "sharp"
+    ]
   },
   "vitest": {
     "coverage": {
