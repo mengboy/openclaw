@@ -11,6 +11,7 @@ import { resolveFeishuAccount } from "./accounts.js";
 import { createFeishuClient } from "./client.js";
 import { buildMentionedCardContent } from "./mention.js";
 import { getFeishuRuntime } from "./runtime.js";
+import { sendMediaFeishu } from "./media.js";
 import { sendMarkdownCardFeishu, sendMessageFeishu } from "./send.js";
 import { FeishuStreamingSession } from "./streaming-card.js";
 import { resolveReceiveIdType } from "./targets.js";
@@ -138,7 +139,8 @@ export function createFeishuReplyDispatcher(params: CreateFeishuReplyDispatcherP
       },
       deliver: async (payload: ReplyPayload, info) => {
         const text = payload.text ?? "";
-        if (!text.trim()) {
+        const mediaUrls = payload.mediaUrls ?? (payload.mediaUrl ? [payload.mediaUrl] : []);
+        if (!text.trim() && mediaUrls.length === 0) {
           return;
         }
 
@@ -155,6 +157,9 @@ export function createFeishuReplyDispatcher(params: CreateFeishuReplyDispatcherP
           if (info?.kind === "final") {
             streamText = text;
             await closeStreaming();
+            for (const mediaUrl of mediaUrls) {
+              await sendMediaFeishu({ cfg, to: chatId, mediaUrl, replyToMessageId, accountId });
+            }
           }
           return;
         }
@@ -193,6 +198,10 @@ export function createFeishuReplyDispatcher(params: CreateFeishuReplyDispatcherP
             });
             first = false;
           }
+        }
+
+        for (const mediaUrl of mediaUrls) {
+          await sendMediaFeishu({ cfg, to: chatId, mediaUrl, replyToMessageId, accountId });
         }
       },
       onError: async (error, info) => {
