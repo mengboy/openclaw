@@ -6,6 +6,7 @@ const normalizeFeishuTargetMock = vi.hoisted(() => vi.fn());
 const resolveReceiveIdTypeMock = vi.hoisted(() => vi.fn());
 
 const fileCreateMock = vi.hoisted(() => vi.fn());
+const imageCreateMock = vi.hoisted(() => vi.fn());
 const messageCreateMock = vi.hoisted(() => vi.fn());
 const messageReplyMock = vi.hoisted(() => vi.fn());
 
@@ -44,6 +45,9 @@ describe("sendMediaFeishu msg_type routing", () => {
         file: {
           create: fileCreateMock,
         },
+        image: {
+          create: imageCreateMock,
+        },
         message: {
           create: messageCreateMock,
           reply: messageReplyMock,
@@ -54,6 +58,11 @@ describe("sendMediaFeishu msg_type routing", () => {
     fileCreateMock.mockResolvedValue({
       code: 0,
       data: { file_key: "file_key_1" },
+    });
+
+    imageCreateMock.mockResolvedValue({
+      code: 0,
+      data: { image_key: "img_key_1" },
     });
 
     messageCreateMock.mockResolvedValue({
@@ -147,5 +156,31 @@ describe("sendMediaFeishu msg_type routing", () => {
     );
 
     expect(messageCreateMock).not.toHaveBeenCalled();
+  });
+
+
+  it("uses msg_type=image for remote image URL without extension", async () => {
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue({
+        ok: true,
+        headers: { get: (k: string) => (k.toLowerCase() === "content-type" ? "image/png" : null) },
+        arrayBuffer: async () => new Uint8Array([1, 2, 3]).buffer,
+      } as any);
+
+    await sendMediaFeishu({
+      cfg: {} as any,
+      to: "user:ou_target",
+      mediaUrl: "https://example.com/download?id=1",
+    });
+
+    expect(imageCreateMock).toHaveBeenCalledTimes(1);
+    expect(messageCreateMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ msg_type: "image" }),
+      }),
+    );
+
+    fetchMock.mockRestore();
   });
 });

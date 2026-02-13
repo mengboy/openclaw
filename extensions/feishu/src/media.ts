@@ -421,7 +421,13 @@ export async function sendFileFeishu(params: {
 /**
  * Helper to detect file type from extension
  */
-export function detectFileType(
+export 
+function isImageContentType(contentType?: string | null): boolean {
+  if (!contentType) return false;
+  return contentType.toLowerCase().startsWith("image/");
+}
+
+function detectFileType(
   fileName: string,
 ): "opus" | "mp4" | "pdf" | "doc" | "xls" | "ppt" | "stream" {
   const ext = path.extname(fileName).toLowerCase();
@@ -482,6 +488,7 @@ export async function sendMediaFeishu(params: {
 
   let buffer: Buffer;
   let name: string;
+  let remoteContentType: string | undefined;
 
   if (mediaBuffer) {
     buffer = mediaBuffer;
@@ -504,6 +511,7 @@ export async function sendMediaFeishu(params: {
       if (!response.ok) {
         throw new Error(`Failed to fetch media from URL: ${response.status}`);
       }
+      remoteContentType = response.headers.get("content-type") ?? undefined;
       buffer = Buffer.from(await response.arrayBuffer());
       name = fileName ?? (path.basename(new URL(mediaUrl).pathname) || "file");
     }
@@ -511,9 +519,10 @@ export async function sendMediaFeishu(params: {
     throw new Error("Either mediaUrl or mediaBuffer must be provided");
   }
 
-  // Determine if it's an image based on extension
+  // Determine if it's an image based on extension or remote content-type
   const ext = path.extname(name).toLowerCase();
-  const isImage = [".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp", ".ico", ".tiff"].includes(ext);
+  const isImageByExt = [".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp", ".ico", ".tiff"].includes(ext);
+  const isImage = isImageByExt || isImageContentType(remoteContentType);
 
   if (isImage) {
     const { imageKey } = await uploadImageFeishu({ cfg, image: buffer, accountId });
