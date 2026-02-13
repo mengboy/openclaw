@@ -1,18 +1,23 @@
 import { ProxyAgent, getGlobalDispatcher, setGlobalDispatcher } from "undici";
-
 import { createSubsystemLogger } from "../logging/subsystem.js";
 
 const log = createSubsystemLogger("infra/proxy");
 
 let appliedProxyUrl: string | null = null;
 
-function resolveProxyUrl(env: NodeJS.ProcessEnv): string | null {
+export function resolveProxyUrlFromEnv(env: NodeJS.ProcessEnv): string | null {
   const httpsProxy = env.HTTPS_PROXY?.trim() || env.https_proxy?.trim();
-  if (httpsProxy) return httpsProxy;
+  if (httpsProxy) {
+    return httpsProxy;
+  }
   const httpProxy = env.HTTP_PROXY?.trim() || env.http_proxy?.trim();
-  if (httpProxy) return httpProxy;
+  if (httpProxy) {
+    return httpProxy;
+  }
   const allProxy = env.ALL_PROXY?.trim() || env.all_proxy?.trim();
-  if (allProxy) return allProxy;
+  if (allProxy) {
+    return allProxy;
+  }
   return null;
 }
 
@@ -30,14 +35,20 @@ function maskProxyUrl(url: string): string {
 }
 
 export function applyGlobalProxyFromEnv(env: NodeJS.ProcessEnv = process.env): void {
-  const proxyUrl = resolveProxyUrl(env);
-  if (!proxyUrl) return;
-  if (appliedProxyUrl === proxyUrl) return;
+  const proxyUrl = resolveProxyUrlFromEnv(env);
+  if (!proxyUrl) {
+    return;
+  }
+  if (appliedProxyUrl === proxyUrl) {
+    return;
+  }
 
   try {
     const agent = new ProxyAgent(proxyUrl);
     const current = getGlobalDispatcher();
-    if (current === agent) return;
+    if (current === agent) {
+      return;
+    }
     setGlobalDispatcher(agent);
     appliedProxyUrl = proxyUrl;
     log.info("applied global proxy agent", { proxy: maskProxyUrl(proxyUrl) });

@@ -1,7 +1,9 @@
 import { Client, type BaseMessageInteractiveComponent } from "@buape/carbon";
 import { GatewayIntents, GatewayPlugin } from "@buape/carbon/gateway";
 import { Routes } from "discord-api-types/v10";
+import { HttpsProxyAgent } from "https-proxy-agent";
 import { inspect } from "node:util";
+import WebSocket from "ws";
 import type { HistoryEntry } from "../../auto-reply/reply/history.js";
 import type { OpenClawConfig, ReplyToMode } from "../../config/config.js";
 import type { RuntimeEnv } from "../../runtime.js";
@@ -17,6 +19,7 @@ import {
 import { loadConfig } from "../../config/config.js";
 import { danger, logVerbose, shouldLogVerbose, warn } from "../../globals.js";
 import { formatErrorMessage } from "../../infra/errors.js";
+import { resolveProxyUrlFromEnv } from "../../infra/proxy.js";
 import { createDiscordRetryRunner } from "../../infra/retry-policy.js";
 import { createSubsystemLogger } from "../../logging/subsystem.js";
 import { resolveDiscordAccount } from "../accounts.js";
@@ -139,6 +142,58 @@ function resolveDiscordGatewayIntents(
     intents |= GatewayIntents.GuildMembers;
   }
   return intents;
+}
+
+function summarizeProxyUrlForLog(proxyUrl: string): string {
+  try {
+    const parsed = new URL(proxyUrl);
+    if (!parsed.port) {
+      return `${parsed.protocol}//${parsed.hostname}`;
+    }
+    return `${parsed.protocol}//${parsed.hostname}:${parsed.port}`;
+  } catch {
+    return proxyUrl;
+  }
+}
+
+function patchDiscordGatewayWebSocketProxy(params: {
+  gateway: GatewayPlugin;
+  runtime: RuntimeEnv;
+}) {
+  const proxyUrl = resolveProxyUrlFromEnv(process.env);
+  if (!proxyUrl) {
+    return;
+  }
+
+  let proxyAgent: HttpsProxyAgent<string>;
+  try {
+    proxyAgent = new HttpsProxyAgent(proxyUrl);
+  } catch (err) {
+    params.runtime.log?.(
+      warn(`discord: failed to build websocket proxy agent (${formatErrorMessage(err)})`),
+    );
+    return;
+  }
+
+  const gateway = params.gateway as GatewayPlugin & {
+    createWebSocket?: (url: string) => WebSocket;
+  };
+  if (typeof gateway.createWebSocket !== "function") {
+    params.runtime.log?.(
+      warn("discord: gateway websocket proxy patch skipped (unsupported plugin)"),
+    );
+    return;
+  }
+
+  // Carbon does not wire env proxy settings into ws; patching this method keeps
+  // Discord gateway WSS reconnects on the same proxy path as HTTP calls.
+  gateway.createWebSocket = (url: string) =>
+    new WebSocket(url, {
+      agent: proxyAgent,
+    });
+  params.runtime.log?.(
+    `discord: gateway websocket proxy enabled (${summarizeProxyUrlForLog(proxyUrl)})`,
+  );
 }
 
 export async function monitorDiscordProvider(opts: MonitorDiscordOpts = {}) {
@@ -512,6 +567,15 @@ export async function monitorDiscordProvider(opts: MonitorDiscordOpts = {}) {
     );
   }
 
+  const gatewayPlugin = new GatewayPlugin({
+    reconnect: {
+      maxAttempts: 50,
+    },
+    intents: resolveDiscordGatewayIntents(discordCfg.intents),
+    autoInteractions: true,
+  });
+  patchDiscordGatewayWebSocketProxy({ gateway: gatewayPlugin, runtime });
+
   const client = new Client(
     {
       baseUrl: "http://localhost",
@@ -526,15 +590,7 @@ export async function monitorDiscordProvider(opts: MonitorDiscordOpts = {}) {
       listeners: [],
       components,
     },
-    [
-      new GatewayPlugin({
-        reconnect: {
-          maxAttempts: 50,
-        },
-        intents: resolveDiscordGatewayIntents(discordCfg.intents),
-        autoInteractions: true,
-      }),
-    ],
+    [gatewayPlugin],
   );
 
   await deployDiscordCommands({ client, runtime, enabled: nativeEnabled });
