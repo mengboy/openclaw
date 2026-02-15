@@ -28,6 +28,7 @@ type WebMediaOptions = {
   ssrfPolicy?: SsrFPolicy;
   /** Allowed root directories for local path reads. "any" skips the check (caller already validated). */
   localRoots?: string[] | "any";
+  readFile?: (filePath: string) => Promise<Buffer>;
 };
 
 function getDefaultLocalRoots(): string[] {
@@ -165,7 +166,16 @@ async function loadWebMediaInternal(
   mediaUrl: string,
   options: WebMediaOptions = {},
 ): Promise<WebMediaResult> {
-  const { maxBytes, optimizeImages = true, ssrfPolicy, localRoots } = options;
+  const {
+    maxBytes,
+    optimizeImages = true,
+    ssrfPolicy,
+    localRoots,
+    readFile: readFileOverride,
+  } = options;
+  // Strip MEDIA: prefix used by agent tools (e.g. TTS) to tag media paths.
+  // Be lenient: LLM output may add extra whitespace (e.g. "  MEDIA :  /tmp/x.png").
+  mediaUrl = mediaUrl.replace(/^\s*MEDIA\s*:\s*/i, "");
   // Use fileURLToPath for proper handling of file:// URLs (handles file://localhost/path, etc.)
   if (mediaUrl.startsWith("file://")) {
     try {
@@ -267,7 +277,7 @@ async function loadWebMediaInternal(
   await assertLocalMediaAllowed(mediaUrl, localRoots);
 
   // Local path
-  const data = await fs.readFile(mediaUrl);
+  const data = readFileOverride ? await readFileOverride(mediaUrl) : await fs.readFile(mediaUrl);
   const mime = await detectMime({ buffer: data, filePath: mediaUrl });
   const kind = mediaKindFromMime(mime);
   let fileName = path.basename(mediaUrl) || undefined;
@@ -287,27 +297,39 @@ async function loadWebMediaInternal(
 
 export async function loadWebMedia(
   mediaUrl: string,
-  maxBytes?: number,
+  maxBytesOrOptions?: number | WebMediaOptions,
   options?: { ssrfPolicy?: SsrFPolicy; localRoots?: string[] | "any" },
 ): Promise<WebMediaResult> {
+  if (typeof maxBytesOrOptions === "number" || maxBytesOrOptions === undefined) {
+    return await loadWebMediaInternal(mediaUrl, {
+      maxBytes: maxBytesOrOptions,
+      optimizeImages: true,
+      ssrfPolicy: options?.ssrfPolicy,
+      localRoots: options?.localRoots,
+    });
+  }
   return await loadWebMediaInternal(mediaUrl, {
-    maxBytes,
-    optimizeImages: true,
-    ssrfPolicy: options?.ssrfPolicy,
-    localRoots: options?.localRoots,
+    ...maxBytesOrOptions,
+    optimizeImages: maxBytesOrOptions.optimizeImages ?? true,
   });
 }
 
 export async function loadWebMediaRaw(
   mediaUrl: string,
-  maxBytes?: number,
+  maxBytesOrOptions?: number | WebMediaOptions,
   options?: { ssrfPolicy?: SsrFPolicy; localRoots?: string[] | "any" },
 ): Promise<WebMediaResult> {
+  if (typeof maxBytesOrOptions === "number" || maxBytesOrOptions === undefined) {
+    return await loadWebMediaInternal(mediaUrl, {
+      maxBytes: maxBytesOrOptions,
+      optimizeImages: false,
+      ssrfPolicy: options?.ssrfPolicy,
+      localRoots: options?.localRoots,
+    });
+  }
   return await loadWebMediaInternal(mediaUrl, {
-    maxBytes,
+    ...maxBytesOrOptions,
     optimizeImages: false,
-    ssrfPolicy: options?.ssrfPolicy,
-    localRoots: options?.localRoots,
   });
 }
 

@@ -9,9 +9,9 @@ import {
 import type { MentionTarget } from "./mention.js";
 import { resolveFeishuAccount } from "./accounts.js";
 import { createFeishuClient } from "./client.js";
+import { sendMediaFeishu } from "./media.js";
 import { buildMentionedCardContent } from "./mention.js";
 import { getFeishuRuntime } from "./runtime.js";
-import { sendMediaFeishu } from "./media.js";
 import { sendMarkdownCardFeishu, sendMessageFeishu } from "./send.js";
 import { FeishuStreamingSession } from "./streaming-card.js";
 import { resolveReceiveIdType } from "./targets.js";
@@ -214,6 +214,9 @@ export function createFeishuReplyDispatcher(params: CreateFeishuReplyDispatcherP
       onIdle: async () => {
         await closeStreaming();
         typingCallbacks.onIdle?.();
+      },
+      onCleanup: () => {
+        typingCallbacks.onCleanup?.();
       },
     });
 
