@@ -1,10 +1,11 @@
 import fs from "fs";
-import os from "os";
 import path from "path";
 import { Readable } from "stream";
-import type { ClawdbotConfig } from "openclaw/plugin-sdk";
+import { withTempDownloadPath, type ClawdbotConfig } from "openclaw/plugin-sdk";
 import { resolveFeishuAccount } from "./accounts.js";
 import { createFeishuClient } from "./client.js";
+import { normalizeFeishuExternalKey } from "./external-keys.js";
+import { getFeishuRuntime } from "./runtime.js";
 import { assertFeishuMessageApiSuccess, toFeishuSendResult } from "./send-result.js";
 import { resolveReceiveIdType, normalizeFeishuTarget } from "./targets.js";
 
@@ -21,7 +22,7 @@ export type DownloadMessageResourceResult = {
 
 async function readFeishuResponseBuffer(params: {
   response: unknown;
-  tmpPath: string;
+  tmpDirPrefix: string;
   errorPrefix: string;
 }): Promise<Buffer> {
   const { response } = params;
@@ -52,10 +53,10 @@ async function readFeishuResponseBuffer(params: {
     return Buffer.concat(chunks);
   }
   if (typeof responseAny.writeFile === "function") {
-    await responseAny.writeFile(params.tmpPath);
-    const buffer = await fs.promises.readFile(params.tmpPath);
-    await fs.promises.unlink(params.tmpPath).catch(() => {});
-    return buffer;
+    return await withTempDownloadPath({ prefix: params.tmpDirPrefix }, async (tmpPath) => {
+      await responseAny.writeFile(tmpPath);
+      return await fs.promises.readFile(tmpPath);
+    });
   }
   if (typeof responseAny[Symbol.asyncIterator] === "function") {
     const chunks: Buffer[] = [];
@@ -87,6 +88,10 @@ export async function downloadImageFeishu(params: {
   accountId?: string;
 }): Promise<DownloadImageResult> {
   const { cfg, imageKey, accountId } = params;
+  const normalizedImageKey = normalizeFeishuExternalKey(imageKey);
+  if (!normalizedImageKey) {
+    throw new Error("Feishu image download failed: invalid image_key");
+  }
   const account = resolveFeishuAccount({ cfg, accountId });
   if (!account.configured) {
     throw new Error(`Feishu account "${account.accountId}" not configured`);
@@ -95,13 +100,12 @@ export async function downloadImageFeishu(params: {
   const client = createFeishuClient(account);
 
   const response = await client.im.image.get({
-    path: { image_key: imageKey },
+    path: { image_key: normalizedImageKey },
   });
 
-  const tmpPath = path.join(os.tmpdir(), `feishu_img_${Date.now()}_${imageKey}`);
   const buffer = await readFeishuResponseBuffer({
     response,
-    tmpPath,
+    tmpDirPrefix: "openclaw-feishu-img-",
     errorPrefix: "Feishu image download failed",
   });
   return { buffer };
@@ -119,6 +123,10 @@ export async function downloadMessageResourceFeishu(params: {
   accountId?: string;
 }): Promise<DownloadMessageResourceResult> {
   const { cfg, messageId, fileKey, type, accountId } = params;
+  const normalizedFileKey = normalizeFeishuExternalKey(fileKey);
+  if (!normalizedFileKey) {
+    throw new Error("Feishu message resource download failed: invalid file_key");
+  }
   const account = resolveFeishuAccount({ cfg, accountId });
   if (!account.configured) {
     throw new Error(`Feishu account "${account.accountId}" not configured`);
@@ -127,14 +135,13 @@ export async function downloadMessageResourceFeishu(params: {
   const client = createFeishuClient(account);
 
   const response = await client.im.messageResource.get({
-    path: { message_id: messageId, file_key: fileKey },
+    path: { message_id: messageId, file_key: normalizedFileKey },
     params: { type },
   });
 
-  const tmpPath = path.join(os.tmpdir(), `feishu_${Date.now()}_${fileKey}`);
   const buffer = await readFeishuResponseBuffer({
     response,
-    tmpPath,
+    tmpDirPrefix: "openclaw-feishu-resource-",
     errorPrefix: "Feishu message resource download failed",
   });
   return { buffer };
@@ -354,12 +361,7 @@ export async function sendFileFeishu(params: {
 /**
  * Helper to detect file type from extension
  */
-export function isImageContentType(contentType?: string | null): boolean {
-  if (!contentType) return false;
-  return contentType.toLowerCase().startsWith("image/");
-}
-
-function detectFileType(
+export function detectFileType(
   fileName: string,
 ): "opus" | "mp4" | "pdf" | "doc" | "xls" | "ppt" | "stream" {
   const ext = path.extname(fileName).toLowerCase();
@@ -388,23 +390,6 @@ function detectFileType(
 }
 
 /**
- * Check if a string is a local file path (not a URL)
- */
-function isLocalPath(urlOrPath: string): boolean {
-  // Starts with / or ~ or drive letter (Windows)
-  if (urlOrPath.startsWith("/") || urlOrPath.startsWith("~") || /^[a-zA-Z]:/.test(urlOrPath)) {
-    return true;
-  }
-  // Try to parse as URL - if it fails or has no protocol, it's likely a local path
-  try {
-    const url = new URL(urlOrPath);
-    return url.protocol === "file:";
-  } catch {
-    return true; // Not a valid URL, treat as local path
-  }
-}
-
-/**
  * Upload and send media (image or file) from URL, local path, or buffer
  */
 export async function sendMediaFeishu(params: {
@@ -417,46 +402,32 @@ export async function sendMediaFeishu(params: {
   accountId?: string;
 }): Promise<SendMediaResult> {
   const { cfg, to, mediaUrl, mediaBuffer, fileName, replyToMessageId, accountId } = params;
+  const account = resolveFeishuAccount({ cfg, accountId });
+  if (!account.configured) {
+    throw new Error(`Feishu account "${account.accountId}" not configured`);
+  }
+  const mediaMaxBytes = (account.config?.mediaMaxMb ?? 30) * 1024 * 1024;
 
   let buffer: Buffer;
   let name: string;
-  let remoteContentType: string | undefined;
 
   if (mediaBuffer) {
     buffer = mediaBuffer;
     name = fileName ?? "file";
   } else if (mediaUrl) {
-    if (isLocalPath(mediaUrl)) {
-      // Local file path - read directly
-      const filePath = mediaUrl.startsWith("~")
-        ? mediaUrl.replace("~", process.env.HOME ?? "")
-        : mediaUrl.replace("file://", "");
-
-      if (!fs.existsSync(filePath)) {
-        throw new Error(`Local file not found: ${filePath}`);
-      }
-      buffer = fs.readFileSync(filePath);
-      name = fileName ?? path.basename(filePath);
-    } else {
-      // Remote URL - fetch
-      const response = await fetch(mediaUrl);
-      if (!response.ok) {
-        throw new Error(`Failed to fetch media from URL: ${response.status}`);
-      }
-      remoteContentType = response.headers.get("content-type") ?? undefined;
-      buffer = Buffer.from(await response.arrayBuffer());
-      name = fileName ?? (path.basename(new URL(mediaUrl).pathname) || "file");
-    }
+    const loaded = await getFeishuRuntime().media.loadWebMedia(mediaUrl, {
+      maxBytes: mediaMaxBytes,
+      optimizeImages: false,
+    });
+    buffer = loaded.buffer;
+    name = fileName ?? loaded.fileName ?? "file";
   } else {
     throw new Error("Either mediaUrl or mediaBuffer must be provided");
   }
 
-  // Determine if it's an image based on extension or remote content-type
+  // Determine if it's an image based on extension
   const ext = path.extname(name).toLowerCase();
-  const isImageByExt = [".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp", ".ico", ".tiff"].includes(
-    ext,
-  );
-  const isImage = isImageByExt || isImageContentType(remoteContentType);
+  const isImage = [".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp", ".ico", ".tiff"].includes(ext);
 
   if (isImage) {
     const { imageKey } = await uploadImageFeishu({ cfg, image: buffer, accountId });
